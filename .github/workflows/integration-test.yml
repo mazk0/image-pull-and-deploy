@@ -1,0 +1,93 @@
+name: Integration Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Restore and Build
+      run: dotnet build ImagePuller/ImagePuller/ImagePuller.csproj
+
+    - name: Setup Mock Deployment Script
+      run: |
+        mkdir -p scripts
+        echo '#!/bin/bash' > scripts/deploy.sh
+        echo 'echo "Deploying event: $1 action: $2 tag: $3"' >> scripts/deploy.sh
+        chmod +x scripts/deploy.sh
+
+    - name: Start Application in Background
+      run: |
+        # Use a secret for testing
+        export Webhook__Secret=testsecret789
+        export Webhook__DeploymentScriptPath=../../scripts/deploy.sh
+        dotnet run --project ImagePuller/ImagePuller/ImagePuller.csproj --launch-profile http > app.log 2>&1 &
+        echo "APP_PID=$!" >> $GITHUB_ENV
+
+    - name: Wait for App to be Ready
+      run: |
+        timeout 60s bash -c 'until curl -s http://localhost:5030/webhook > /dev/null; do sleep 1; done' || (cat app.log && exit 1)
+        echo "App is ready!"
+
+    - name: Test Webhook (Ping)
+      run: |
+        SECRET="testsecret789"
+        PAYLOAD='{"zen":"Testing is better than manual clicking."}'
+        SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+        
+        RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:5030/webhook \
+          -H "Content-Type: application/json" \
+          -H "X-GitHub-Event: ping" \
+          -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
+          -d "$PAYLOAD")
+        
+        if [ "$RESPONSE" != "200" ]; then
+          echo "Ping failed with code $RESPONSE"
+          cat app.log
+          exit 1
+        fi
+        echo "Ping success!"
+
+    - name: Test Webhook (Package Deployment)
+      run: |
+        SECRET="testsecret789"
+        PAYLOAD='{"action":"published","package":{"package_version":{"tag":"v1.2.3"}}}'
+        SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+        
+        RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:5030/webhook \
+          -H "Content-Type: application/json" \
+          -H "X-GitHub-Event: package" \
+          -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
+          -d "$PAYLOAD")
+        
+        if [ "$RESPONSE" != "202" ]; then
+          echo "Package webhook failed with code $RESPONSE"
+          cat app.log
+          exit 1
+        fi
+        echo "Package webhook success!"
+
+    - name: Verify App Logs
+      run: |
+        sleep 2
+        cat app.log
+        grep -q "GitHub ping received" app.log
+        grep -q "Webhook verified. Event: package, Action: published, Tag: v1.2.3" app.log
+        grep -q "Executing script: ../../scripts/deploy.sh package published v1.2.3" app.log
+
+    - name: Cleanup
+      if: always()
+      run: |
+        kill ${{ env.APP_PID }} || true
