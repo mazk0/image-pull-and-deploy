@@ -2,14 +2,35 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.ComponentModel.DataAnnotations;
 
 namespace ImagePuller.Endpoints;
+
+// Records for GitHub Webhook Payload
+// Made properties optional (?) so 'ping' event doesn't fail validation
+public record GitHubPackageVersion(
+    [property: JsonPropertyName("tag")] string? Tag
+);
+
+public record GitHubPackage(
+    [property: JsonPropertyName("package_version")] GitHubPackageVersion? PackageVersion
+);
+
+public record GitHubWebhookPayload(
+    [property: JsonPropertyName("action")] string? Action,
+    [property: JsonPropertyName("package")] GitHubPackage? Package
+);
 
 public static class WebhookEndpoints
 {
     public static void MapWebhookEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/webhook", async (HttpContext context, IConfiguration config, ILogger<Program> logger) =>
+        app.MapPost("/webhook", async (
+            HttpContext context, 
+            IConfiguration config, 
+            ILogger<Program> logger,
+            GitHubWebhookPayload payload) =>
         {
             var secret = config["Webhook:Secret"];
             var scriptPath = config["Webhook:DeploymentScriptPath"];
