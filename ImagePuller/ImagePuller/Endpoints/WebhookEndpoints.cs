@@ -87,17 +87,11 @@ public static class WebhookEndpoints
     private static bool VerifySignature(byte[] bodyBytes, string signatureHeader, string secret)
     {
         if (!signatureHeader.StartsWith("sha256=")) return false;
-
         var headerHashHex = signatureHeader.Substring(7);
         var keyBytes = Encoding.UTF8.GetBytes(secret);
-
         using var hmac = new HMACSHA256(keyBytes);
-        var computedHashBytes = hmac.ComputeHash(bodyBytes);
-        var computedHashHex = Convert.ToHexString(computedHashBytes).ToLower();
-
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(computedHashHex), 
-            Encoding.UTF8.GetBytes(headerHashHex));
+        var computedHashHex = Convert.ToHexString(hmac.ComputeHash(bodyBytes)).ToLower();
+        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(computedHashHex), Encoding.UTF8.GetBytes(headerHashHex));
     }
 
     private static async Task ExecuteScript(string? scriptPath, string arguments, ILogger logger)
@@ -109,7 +103,6 @@ public static class WebhookEndpoints
         }
 
         logger.LogInformation("Executing script: {ScriptPath} {Arguments}", scriptPath, arguments);
-
         var processInfo = new ProcessStartInfo
         {
             FileName = "/bin/bash",
@@ -119,22 +112,12 @@ public static class WebhookEndpoints
             UseShellExecute = false,
             CreateNoWindow = true
         };
-
         using var process = new Process { StartInfo = processInfo };
         process.Start();
-
         var output = await process.StandardOutput.ReadToEndAsync();
         var error = await process.StandardError.ReadToEndAsync();
-
         await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0)
-        {
-            logger.LogError("Script failed with exit code {ExitCode}. Error: {Error}", process.ExitCode, error);
-        }
-        else
-        {
-            logger.LogInformation("Script executed successfully. Output: {Output}", output);
-        }
+        if (process.ExitCode != 0) logger.LogError("Script failed with exit code {ExitCode}. Error: {Error}", process.ExitCode, error);
+        else logger.LogInformation("Script executed successfully. Output: {Output}", output);
     }
 }
