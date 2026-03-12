@@ -49,11 +49,12 @@ public static class WebhookEndpoints
 
             context.Request.Headers.TryGetValue("X-GitHub-Event", out var eventType);
 
-            context.Request.EnableBuffering();
+            // IMPORTANT: We must rewind the body stream because the model binder (record) 
+            // has already read it. EnableBuffering() must be called in Program.cs.
+            context.Request.Body.Position = 0;
             using var ms = new MemoryStream();
             await context.Request.Body.CopyToAsync(ms);
             var bodyBytes = ms.ToArray();
-            context.Request.Body.Position = 0;
 
             if (!VerifySignature(bodyBytes, signatureHeader.ToString(), secret))
             {
@@ -67,34 +68,16 @@ public static class WebhookEndpoints
                 return Results.Ok(new { message = "Ping received" });
             }
 
-            string body = Encoding.UTF8.GetString(bodyBytes);
-            string action = "unknown";
-            string tag = "latest";
-            try 
-            {
-                using var doc = JsonDocument.Parse(body);
-                if (doc.RootElement.TryGetProperty("action", out var actionProp))
-                    action = actionProp.GetString() ?? "unknown";
-                
-                if (doc.RootElement.TryGetProperty("package", out var pkg) && 
-                    pkg.TryGetProperty("package_version", out var ver) &&
-                    ver.TryGetProperty("tag", out var tagProp))
-                    tag = tagProp.GetString() ?? "latest";
-            }
-            catch { }
+            // Extract logic from our validated records
+            string action = payload.Action ?? "unknown";
+            string tag = payload.Package?.PackageVersion?.Tag ?? "latest";
 
             logger.LogInformation("Webhook verified. Event: {Event}, Action: {Action}, Tag: {Tag}", eventType, action, tag);
 
             _ = Task.Run(async () =>
             {
-                try
-                {
-                    await ExecuteScript(scriptPath, $"{eventType} {action} {tag}", logger);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "Failed to execute deployment script.");
-                }
+                try { await ExecuteScript(scriptPath, $"{eventType} {action} {tag}", logger); }
+                catch (Exception ex) { logger.LogError(ex, "Failed to execute deployment script."); }
             });
 
             return Results.Accepted();
