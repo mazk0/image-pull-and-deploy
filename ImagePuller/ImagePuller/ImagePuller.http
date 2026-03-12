@@ -1,0 +1,19 @@
+@ImagePuller_HostAddress = http://127.0.0.1:5030
+
+### 1. Test Webhook (Ping)
+# Secret: devsecret123
+POST {{ImagePuller_HostAddress}}/webhook
+Content-Type: application/json
+X-GitHub-Event: ping
+X-Hub-Signature-256: sha256=5f2ad8eb5a9ba6bce78824eb9e8b7caa2a9753a99407a9d7081224f9ee6db8c0
+
+{"zen":"Non-blocking is better than blocking."}
+
+### 2. Test Package Event (Deployment)
+# Secret: devsecret123
+POST {{ImagePuller_HostAddress}}/webhook
+Content-Type: application/json
+X-GitHub-Event: package
+X-Hub-Signature-256: sha256=377f667e5c4cc6d83fa8fc37ec5452f347ff7086dcef8dc094aaafadca4f0b78
+
+{"action":"published","package":{"package_version":{"tag":"latest"}}}
