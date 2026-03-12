@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace ImagePuller.Endpoints;
 
@@ -19,32 +20,55 @@ public static class WebhookEndpoints
                 return Results.StatusCode(500);
             }
 
-            if (!context.Request.Headers.TryGetValue("X-Hub-Signature-256", out var signature))
+            if (!context.Request.Headers.TryGetValue("X-Hub-Signature-256", out var signatureHeader))
             {
                 logger.LogWarning("Missing X-Hub-Signature-256 header.");
                 return Results.Unauthorized();
             }
 
-            // Read the body for signature verification
+            context.Request.Headers.TryGetValue("X-GitHub-Event", out var eventType);
+
             context.Request.EnableBuffering();
-            using var reader = new StreamReader(context.Request.Body, Encoding.UTF8, leaveOpen: true);
-            var body = await reader.ReadToEndAsync();
+            using var ms = new MemoryStream();
+            await context.Request.Body.CopyToAsync(ms);
+            var bodyBytes = ms.ToArray();
             context.Request.Body.Position = 0;
 
-            if (!VerifySignature(body, signature, secret))
+            if (!VerifySignature(bodyBytes, signatureHeader.ToString(), secret))
             {
                 logger.LogWarning("Invalid webhook signature.");
                 return Results.Unauthorized();
             }
 
-            logger.LogInformation("Webhook verified. Triggering deployment script: {ScriptPath}", scriptPath);
+            if (eventType == "ping")
+            {
+                logger.LogInformation("GitHub ping received. Webhook is active.");
+                return Results.Ok(new { message = "Ping received" });
+            }
 
-            // Run deployment in the background
+            string body = Encoding.UTF8.GetString(bodyBytes);
+            string action = "unknown";
+            string tag = "latest";
+            try 
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("action", out var actionProp))
+                    action = actionProp.GetString() ?? "unknown";
+                
+                if (doc.RootElement.TryGetProperty("package", out var pkg) && 
+                    pkg.TryGetProperty("package_version", out var ver) &&
+                    ver.TryGetProperty("tag", out var tagProp))
+                    tag = tagProp.GetString() ?? "latest";
+            }
+            catch { }
+
+            logger.LogInformation("Webhook verified. Event: {Event}, Action: {Action}, Tag: {Tag}", eventType, action, tag);
+
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    await ExecuteScript(scriptPath, logger);
+                    await ExecuteScript(scriptPath, $"{eventType} {action} {tag}", logger);
                 }
                 catch (Exception ex)
                 {
@@ -56,24 +80,23 @@ public static class WebhookEndpoints
         });
     }
 
-    private static bool VerifySignature(string body, string? signature, string secret)
+    private static bool VerifySignature(byte[] bodyBytes, string signatureHeader, string secret)
     {
-        if (string.IsNullOrEmpty(signature) || !signature.StartsWith("sha256=")) return false;
+        if (!signatureHeader.StartsWith("sha256=")) return false;
 
-        var sha256 = signature.Substring(7);
+        var headerHashHex = signatureHeader.Substring(7);
         var keyBytes = Encoding.UTF8.GetBytes(secret);
-        var bodyBytes = Encoding.UTF8.GetBytes(body);
 
         using var hmac = new HMACSHA256(keyBytes);
-        var hashBytes = hmac.ComputeHash(bodyBytes);
-        var hash = Convert.ToHexString(hashBytes).ToLower();
+        var computedHashBytes = hmac.ComputeHash(bodyBytes);
+        var computedHashHex = Convert.ToHexString(computedHashBytes).ToLower();
 
         return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(hash), 
-            Encoding.UTF8.GetBytes(sha256));
+            Encoding.UTF8.GetBytes(computedHashHex), 
+            Encoding.UTF8.GetBytes(headerHashHex));
     }
 
-    private static async Task ExecuteScript(string? scriptPath, ILogger logger)
+    private static async Task ExecuteScript(string? scriptPath, string arguments, ILogger logger)
     {
         if (string.IsNullOrEmpty(scriptPath) || !File.Exists(scriptPath))
         {
@@ -81,12 +104,12 @@ public static class WebhookEndpoints
             return;
         }
 
-        logger.LogInformation("Executing script: {ScriptPath}", scriptPath);
+        logger.LogInformation("Executing script: {ScriptPath} {Arguments}", scriptPath, arguments);
 
         var processInfo = new ProcessStartInfo
         {
             FileName = "/bin/bash",
-            Arguments = scriptPath,
+            Arguments = $"{scriptPath} {arguments}",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
