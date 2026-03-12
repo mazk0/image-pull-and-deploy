@@ -1,20 +1,16 @@
 using ImagePuller.Endpoints;
-using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure Serilog
-Log.Logger = new LoggerConfiguration()
-    .ReadFrom.Configuration(builder.Configuration)
-    .CreateLogger();
-
-builder.Host.UseSerilog();
+// Using standard .NET Logging
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
 
 var app = builder.Build();
 
-app.UseSerilogRequestLogging();
+app.UseHttpsRedirection();
 
-// Register Endpoints
+// Register Webhook Endpoints
 app.MapWebhookEndpoints();
 
 app.Run();
